@@ -309,7 +309,7 @@ axs[1].imshow(arr2_r, cmap='gray')
 
 
 
-    <matplotlib.image.AxesImage at 0x7fa3e6d66fd0>
+    <matplotlib.image.AxesImage at 0x7f89f2ca2090>
 
 
 
@@ -505,7 +505,7 @@ axs[1].imshow(arr_disp, vmin=min_disp, vmax=max_disp, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fa3deccce50>
+    <matplotlib.image.AxesImage at 0x7f89ea56c650>
 
 
 
@@ -610,7 +610,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fa3de329a10>
+    <matplotlib.image.AxesImage at 0x7f89ea44d650>
 
 
 
@@ -737,7 +737,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fa3de4cff90>
+    <matplotlib.image.AxesImage at 0x7f89e9fbc310>
 
 
 
@@ -851,7 +851,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fa3de188850>
+    <matplotlib.image.AxesImage at 0x7f89e9fb4850>
 
 
 
@@ -916,7 +916,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fa3d58d4f50>
+    <matplotlib.image.AxesImage at 0x7f89d57cc790>
 
 
 
@@ -952,7 +952,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fa3d5d3ed50>
+    <matplotlib.image.AxesImage at 0x7f89ea760510>
 
 
 
