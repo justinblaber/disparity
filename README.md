@@ -7,16 +7,19 @@
 
 ```python
 # export
-import re
-import time
-from pathlib import Path
-
 import numba
-import torch
 import numpy as np
-import matplotlib.pyplot as plt
 
 from camera_calib.utils import *
+```
+
+
+```python
+import re
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+import torch
 ```
 
 # Utilities
@@ -54,6 +57,8 @@ def _print_imgs(imgs):
 ```
 
 # Compute disparity map
+
+First, we need to calibrate, then rectify, and then we can compute disparity maps.
 
 ## Calibrate
 
@@ -226,7 +231,7 @@ api.plot_residuals(calib);
 ```
 
 
-![png](README_files/README_15_0.png)
+![png](README_files/README_17_0.png)
 
 
 
@@ -235,7 +240,7 @@ api.plot_extrinsics(calib);
 ```
 
 
-![png](README_files/README_16_0.png)
+![png](README_files/README_18_0.png)
 
 
 
@@ -304,12 +309,12 @@ axs[1].imshow(arr2_r, cmap='gray')
 
 
 
-    <matplotlib.image.AxesImage at 0x7fbee2473ed0>
+    <matplotlib.image.AxesImage at 0x7fa3e6d66fd0>
 
 
 
 
-![png](README_files/README_26_1.png)
+![png](README_files/README_28_1.png)
 
 
 ## Disparity
@@ -330,10 +335,12 @@ for arr, ax in zip([arr1, arr2], axs): ax.imshow(arr)
 ```
 
 
-![png](README_files/README_30_0.png)
+![png](README_files/README_32_0.png)
 
 
 ### Basic block matching
+
+sum of absolute difference is a common loss function for disparity maps
 
 
 ```python
@@ -376,14 +383,14 @@ Test out getting the loss for an example point
 
 ```python
 def _debug_rect_loss_p(x, y):
-    buf_p = np.full(max_disp-min_disp+1, np.inf)
-    rect_loss_p(arr1, arr2, x, y, hw, min_disp, max_disp, loss, buf_p)
-    d = argmin(buf_p) + min_disp
+    buf_loss = np.full(max_disp-min_disp+1, np.inf)
+    rect_loss_p(arr1, arr2, x, y, hw, min_disp, max_disp, loss, buf_loss)
+    disp = argmin(buf_loss) + min_disp
     _, axs = plt.subplots(1, 2, figsize=(10,10))
     axs[0].imshow(arr1)
     axs[0].plot(x, y, 'rs')
     axs[1].imshow(arr2)
-    axs[1].plot(x+d, y, 'rs')
+    axs[1].plot(x+disp, y, 'rs')
 ```
 
 
@@ -397,7 +404,7 @@ _debug_rect_loss_p(x=60, y=75)
 ```
 
 
-![png](README_files/README_39_0.png)
+![png](README_files/README_42_0.png)
 
 
 `rect_loss_l` will compute the loss for an entire line. Note that an initial disparity map guess can also be input; if this is the case, then the disparity range will be centered around this disparity value instead of zero.
@@ -409,12 +416,12 @@ _debug_rect_loss_p(x=60, y=75)
 def rect_loss_l(arr1, arr2, y, hw, r_disp, loss, arr_disp_init=None):
     h_arr, w_arr = arr1.shape[0], arr1.shape[1]
 
-    buff_loss = np.full((w_arr, r_disp[1]-r_disp[0]+1), np.inf)
+    buf_loss = np.full((w_arr, r_disp[1]-r_disp[0]+1), np.inf)
     for i in range(w_arr):
         disp_init = 0 if arr_disp_init is None else arr_disp_init[y, i]
         min_disp, max_disp = [disp + disp_init for disp in r_disp]
-        rect_loss_p(arr1, arr2, i, y, hw, min_disp, max_disp, loss, buff_loss[i, :])
-    return buff_loss
+        rect_loss_p(arr1, arr2, i, y, hw, min_disp, max_disp, loss, buf_loss[i, :])
+    return buf_loss
 ```
 
 
@@ -437,12 +444,12 @@ _debug_rect_loss_l(60);
 ```
 
 
-![png](README_files/README_44_0.png)
+![png](README_files/README_47_0.png)
 
 
 Note in the above (transposed) loss buffer, the `argmin` will be done column-wise, which could be a problem near column ~125 since there are two minima there.
 
-`min_path_int` will compute path from left to right of transposed loss buffer using the minimum value in each column.
+`min_path_int` will compute the path from left to right of transposed loss buffer using the minimum value in each column.
 
 
 ```python
@@ -455,7 +462,7 @@ def min_path_int(arr_loss, buf_path):
 
 `rect_match_arr` will compute a disparity map. It takes an input `min_path` function which, when given a loss buffer, will compute the best path across it; this will make more sense when we use dynamic programming. `arr_disp_init` is an initial guess for the disparity map; this will make more sense when we do the image pyramids. 
 
-Note that this seems to be the level where multi-threading makes sense; it's not too fine grained where overhead will slow things down and it's not to grainular such that a single thread can cause a long delay.
+Note that this seems to be the level where multi-threading makes sense; it's not too fine grained where overhead will slow things down and it's not too grainular such that a single thread can cause a long delay.
 
 
 ```python
@@ -467,9 +474,9 @@ def rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path, arr_disp_init=None):
     arr_disp = np.empty((h_arr, w_arr))
     for i in numba.prange(h_arr):
         buf_loss = rect_loss_l(arr1, arr2, i, hw, r_disp, loss, arr_disp_init)
-        min_path(buf_loss, arr_disp[i,:]) # Note that initial disparity and range offsets need to be applied
+        min_path(buf_loss, arr_disp[i,:]) # range offset and initial disparity need to be applied after
+        arr_disp[i,:] += r_disp[0]                                       
         if arr_disp_init is not None: arr_disp[i,:] += arr_disp_init[i,:]
-        arr_disp[i,:] += r_disp[0]                                        
     return arr_disp
 ```
 
@@ -498,12 +505,12 @@ axs[1].imshow(arr_disp, vmin=min_disp, vmax=max_disp, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fbee03d20d0>
+    <matplotlib.image.AxesImage at 0x7fa3deccce50>
 
 
 
 
-![png](README_files/README_54_1.png)
+![png](README_files/README_57_1.png)
 
 
 As to be expected this doesn't look great; lets debug some problem areas
@@ -514,7 +521,7 @@ _debug_rect_loss_p(125, 60)
 ```
 
 
-![png](README_files/README_56_0.png)
+![png](README_files/README_59_0.png)
 
 
 There is confusion with similar patterns. Note the found point on the right image is 3 stripes other rather than 2 on the left image.
@@ -525,7 +532,7 @@ _debug_rect_loss_p(125, 25)
 ```
 
 
-![png](README_files/README_58_0.png)
+![png](README_files/README_61_0.png)
 
 
 Glare causes an issue; note the point on the right image is aligned to the glare instead of where it should be
@@ -536,7 +543,7 @@ _debug_rect_loss_p(45, 100)
 ```
 
 
-![png](README_files/README_60_0.png)
+![png](README_files/README_63_0.png)
 
 
 This is actually wrong since the left part of the object is not visible to the right camera. It's more aligned to the side of the object rather than its actual location.
@@ -547,7 +554,7 @@ _debug_rect_loss_p(60, 125)
 ```
 
 
-![png](README_files/README_62_0.png)
+![png](README_files/README_65_0.png)
 
 
 This might be due to the fact that sub images are not normalized (mean subtracted and divided by std-dev) before being compared.
@@ -564,7 +571,7 @@ def argmin_sub(arr):
     idx_min = argmin_int(arr)
     if 1 <= idx_min <= len(arr)-2:
         delta_idx = ((arr[idx_min+1]-arr[idx_min-1])/2)/(arr[idx_min+1]-2*arr[idx_min]+arr[idx_min-1])
-        if np.isnan(delta_idx): delta_idx = 0
+        if np.isnan(delta_idx): delta_idx =  0
         if delta_idx < -1:      delta_idx = -1
         if delta_idx >  1:      delta_idx =  1
         idx_min = idx_min - delta_idx
@@ -603,12 +610,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fbee0240550>
+    <matplotlib.image.AxesImage at 0x7fa3de329a10>
 
 
 
 
-![png](README_files/README_71_1.png)
+![png](README_files/README_74_1.png)
 
 
 Looks smoother near the center of the object.
@@ -623,33 +630,33 @@ arr_loss = _debug_rect_loss_l(75)
 ```
 
 
-![png](README_files/README_75_0.png)
+![png](README_files/README_78_0.png)
 
 
-But with an added smoothness contraint. This will be in the form of a penalty for going "up" and "down" and also a max change between neighboring columns. The hope is that, in the above, the path taken will not skip down near the 125 row, but will instead continue smoothly above it, because doing so would incur a pentalty.
+But with an added smoothness contraint. This will be in the form of a penalty for going "up" and "down" and also a max change between neighboring columns. The hope is that, in the above, the path taken will not skip down near the ~125 column, but will instead continue smoothly above it, because doing so would incur a pentalty.
 
 
 ```python
 # export
 @numba.jit(nopython=True)
-def _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, cost_disp):
+def _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, penality_disp):
     buf_route     = np.zeros(arr_loss.shape)
     buf_move      = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
-    but_loss_prev = arr_loss[-1].copy()
-    for i in range(len(arr_loss)-1, -1, -1):
-        # Get total cost of each move
+    buf_loss_prev = arr_loss[-1].copy() # Going backwards, this is initial optimal loss
+    for i in range(len(arr_loss)-2, -1, -1):
+        # Get loss of each move
         buf_move[:] = np.inf
         for j in range(-max_change, max_change+1):
-            idx_minc, idx_maxc = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
+            idx_minl, idx_maxl = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
             idx_minm, idx_maxm = max(-j,0), min(arr_loss.shape[1]-j,arr_loss.shape[1])
-            buf_move[j+max_change, idx_minm:idx_maxm] = but_loss_prev[idx_minc:idx_maxc] + abs(j)*cost_disp
+            buf_move[j+max_change, idx_minm:idx_maxm] = buf_loss_prev[idx_minl:idx_maxl] + abs(j)*penality_disp
         # Get optimal move and store it
         for j in range(buf_move.shape[1]):
             idx_min = np.argmin(buf_move[:,j])
             buf_route[i,j] = idx_min - max_change
-            but_loss_prev[j] = arr_loss[i,j] + buf_move[idx_min, j] # loss = previous loss + optimal move
+            buf_loss_prev[j] = arr_loss[i,j] + buf_move[idx_min, j] # total loss = loss + optimal move
     # Gather path
-    buf_path[0] = np.argmin(but_loss_prev)
+    buf_path[0] = np.argmin(buf_loss_prev)
     for i in range(1, len(buf_route)):
         buf_path[i] = buf_path[i-1] + buf_route[i-1, int(buf_path[i-1])]
 ```
@@ -659,22 +666,22 @@ Numba does not support lambdas yet, so use factory function as per documentation
 
 ```python
 # export
-def make_min_path_int_dp(r_disp, max_change, cost_disp):
+def make_min_path_int_dp(r_disp, max_change, penalty_disp):
     @numba.jit(nopython=True)
     def min_path(arr_loss, buf_path):
-        return _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, cost_disp)
+        return _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp)
     return min_path
 ```
 
 
 ```python
-cost_disp  = 2
 max_change = 3
+penalty_disp = 2
 ```
 
 
 ```python
-min_path_int_dp = make_min_path_int_dp(r_disp, max_change, cost_disp)
+min_path_int_dp = make_min_path_int_dp(r_disp, max_change, penalty_disp)
 ```
 
 
@@ -693,7 +700,7 @@ _debug_min_path(min_path_int)
 ```
 
 
-![png](README_files/README_83_0.png)
+![png](README_files/README_86_0.png)
 
 
 
@@ -702,7 +709,7 @@ _debug_min_path(min_path_int_dp)
 ```
 
 
-![png](README_files/README_84_0.png)
+![png](README_files/README_87_0.png)
 
 
 Dynamic programming punishes the jump near 125 and prevents it from happening... cool
@@ -730,12 +737,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fbed900df90>
+    <matplotlib.image.AxesImage at 0x7fa3de4cff90>
 
 
 
 
-![png](README_files/README_89_1.png)
+![png](README_files/README_92_1.png)
 
 
 Definitely much smoother. The glare still causes problems though.
@@ -749,11 +756,11 @@ I just basically replaced all `argmin`s with `argmin_sub` and also replaced inde
 # export
 @numba.jit(nopython=True)
 def interp(arr, idx):
-    if idx < 0 or len(arr)-1 < idx: val = np.nan
+    if idx < 0 or idx > len(arr)-1: val = np.nan
     else:
         idx_f = np.floor(idx)
-        if idx == idx_f:    val = arr[int(idx_f)]
-        else:               val = (idx_f+1-idx)*arr[int(idx_f)] + (idx-idx_f)*arr[int(idx_f)+1]
+        if idx == idx_f: val = arr[int(idx_f)]
+        else:            val = (idx_f+1-idx)*arr[int(idx_f)] + (idx-idx_f)*arr[int(idx_f)+1]
     return val
 ```
 
@@ -773,24 +780,24 @@ assert_allclose(np.isnan(interp(arr,  2.5)), True)
 ```python
 # export
 @numba.jit(nopython=True)
-def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, cost_disp):
+def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penality_disp):
     buf_route     = np.zeros(arr_loss.shape)
     buf_move      = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
-    buf_cost_prev = arr_loss[-1].copy()
-    for i in range(len(arr_loss)-1, -1, -1):
-        # Get total cost of each move
+    buf_loss_prev = arr_loss[-1].copy() # Going backwards, this is initial optimal loss
+    for i in range(len(arr_loss)-2, -1, -1):
+        # Get loss of each move
         buf_move[:] = np.inf
         for j in range(-max_change, max_change+1):
-            idx_minc, idx_maxc = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
+            idx_minl, idx_maxl = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
             idx_minm, idx_maxm = max(-j,0), min(arr_loss.shape[1]-j,arr_loss.shape[1])
-            buf_move[j+max_change, idx_minm:idx_maxm] = buf_cost_prev[idx_minc:idx_maxc] + abs(j)*cost_disp
+            buf_move[j+max_change, idx_minm:idx_maxm] = buf_loss_prev[idx_minl:idx_maxl] + abs(j)*penality_disp
         # Get optimal move and store it
         for j in range(buf_move.shape[1]):
             idx_min = argmin_sub(buf_move[:,j])
             buf_route[i,j] = idx_min - max_change
-            buf_cost_prev[j] = arr_loss[i,j] + interp(buf_move[:, j], idx_min)
-    # Gather path                       
-    buf_path[0] = argmin_sub(buf_cost_prev)
+            buf_loss_prev[j] = arr_loss[i,j] + interp(buf_move[:, j], idx_min)
+    # Gather path
+    buf_path[0] = argmin_sub(buf_loss_prev)
     for i in range(1, len(buf_route)):
         buf_path[i] = buf_path[i-1] + interp(buf_route[i-1, :], buf_path[i-1])
 ```
@@ -798,16 +805,16 @@ def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, cost_disp):
 
 ```python
 # export
-def make_min_path_sub_dp(r_disp, max_change, cost_disp):
+def make_min_path_sub_dp(r_disp, max_change, penalty_disp):
     @numba.jit(nopython=True)
     def min_path(arr_loss, buf_path):
-        return _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, cost_disp)
+        return _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp)
     return min_path
 ```
 
 
 ```python
-min_path_sub_dp = make_min_path_sub_dp(r_disp, max_change, cost_disp)
+min_path_sub_dp = make_min_path_sub_dp(r_disp, max_change, penalty_disp)
 ```
 
 
@@ -816,7 +823,7 @@ _debug_min_path(min_path_sub_dp)
 ```
 
 
-![png](README_files/README_98_0.png)
+![png](README_files/README_101_0.png)
 
 
 It's smooth now
@@ -844,19 +851,19 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fbed973a650>
+    <matplotlib.image.AxesImage at 0x7fa3de188850>
 
 
 
 
-![png](README_files/README_103_1.png)
+![png](README_files/README_106_1.png)
 
 
 It's a little bit different from the integer version, but overall it looks similar and is smoother
 
 ### Image pyramid
 
-Try using an image pyramid with "telescoping" search. Note that I've kept the window size the same for each level. In the most reduced image, it will use a proportionally larger window to get the overall translation correct, then in larger images, the proportionally smaller window will localize better.
+Try using an image pyramid with "telescoping" search. Note that I've kept the window size the same for each level. In the most reduced image, it will use a proportionally larger window to get the overall translation correct, then in larger images, the proportionally smaller window will localize better (in theory at least).
 
 
 ```python
@@ -883,8 +890,6 @@ def rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path, steps=3):
 
 
 ```python
-hw = 15
-max_change = 3
 r_disp = (-5,5)
 ```
 
@@ -911,17 +916,17 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fbec4f1e690>
+    <matplotlib.image.AxesImage at 0x7fa3d58d4f50>
 
 
 
 
-![png](README_files/README_112_1.png)
+![png](README_files/README_115_1.png)
 
 
 
 ```python
-min_path_sub_dp = make_min_path_sub_dp(r_disp, max_change, cost_disp)
+min_path_sub_dp = make_min_path_sub_dp(r_disp, max_change, penalty_disp)
 ```
 
 
@@ -934,7 +939,7 @@ arr_disp = rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path_sub_dp)
 arr_disp = rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path_sub_dp)
 ```
 
-~140 ms, a little slower but still pretty fast
+~150 ms, a little slower but still pretty fast
 
 
 ```python
@@ -947,27 +952,27 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7fbec485ee90>
+    <matplotlib.image.AxesImage at 0x7fa3d5d3ed50>
 
 
 
 
-![png](README_files/README_117_1.png)
+![png](README_files/README_120_1.png)
 
 
 # API
 
-Use a class here because every time `min_path_*_dp` is instantiated it seems to make numba recompile, so cache it in the class to make each call fast.
+Use a class here because every time `min_path_*_dp` is instantiated it seems to make numba recompile, so cache it in a `RectMatch` object to make each call fast.
 
 
 ```python
 # export
 class RectMatch:
-    def __init__(self, type_min_path, hw=15, r_disp=(-5,5), loss=SAD, steps=3, max_change=3, cost_disp=2):
+    def __init__(self, type_min_path, hw=15, r_disp=(-5,5), loss=SAD, steps=3, max_change=3, penalty_disp=2):
         if   type_min_path == 'int':    min_path = min_path_int
         elif type_min_path == 'sub':    min_path = min_path_sub
-        elif type_min_path == 'int_dp': min_path = make_min_path_int_dp(r_disp, max_change, cost_disp)
-        elif type_min_path == 'sub_dp': min_path = make_min_path_sub_dp(r_disp, max_change, cost_disp)
+        elif type_min_path == 'int_dp': min_path = make_min_path_int_dp(r_disp, max_change, penalty_disp)
+        elif type_min_path == 'sub_dp': min_path = make_min_path_sub_dp(r_disp, max_change, penalty_disp)
         else: raise RuntimeError(f'Unrecognized min path type: {type_min_path}')
         self.hw, self.r_disp, self.loss, self.steps, self.min_path = hw, r_disp, loss, steps, min_path
     
@@ -990,7 +995,7 @@ for ax, rect_match, type_min_path in zip(axs.ravel(), rect_matchs, types_min_pat
 ```
 
 
-![png](README_files/README_122_0.png)
+![png](README_files/README_125_0.png)
 
 
 # Build

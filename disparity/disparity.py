@@ -4,14 +4,8 @@ __all__ = ['SAD', 'rect_loss_p', 'argmin_int', 'rect_loss_l', 'min_path_int', 'r
            'min_path_sub', 'make_min_path_int_dp', 'interp', 'make_min_path_sub_dp', 'rect_match_pyr', 'RectMatch']
 
 # Cell
-import re
-import time
-from pathlib import Path
-
 import numba
-import torch
 import numpy as np
-import matplotlib.pyplot as plt
 
 from camera_calib.utils import *
 
@@ -43,12 +37,12 @@ def argmin_int(arr): return np.argmin(arr)
 def rect_loss_l(arr1, arr2, y, hw, r_disp, loss, arr_disp_init=None):
     h_arr, w_arr = arr1.shape[0], arr1.shape[1]
 
-    buff_loss = np.full((w_arr, r_disp[1]-r_disp[0]+1), np.inf)
+    buf_loss = np.full((w_arr, r_disp[1]-r_disp[0]+1), np.inf)
     for i in range(w_arr):
         disp_init = 0 if arr_disp_init is None else arr_disp_init[y, i]
         min_disp, max_disp = [disp + disp_init for disp in r_disp]
-        rect_loss_p(arr1, arr2, i, y, hw, min_disp, max_disp, loss, buff_loss[i, :])
-    return buff_loss
+        rect_loss_p(arr1, arr2, i, y, hw, min_disp, max_disp, loss, buf_loss[i, :])
+    return buf_loss
 
 # Cell
 @numba.jit(nopython=True)
@@ -64,9 +58,9 @@ def rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path, arr_disp_init=None):
     arr_disp = np.empty((h_arr, w_arr))
     for i in numba.prange(h_arr):
         buf_loss = rect_loss_l(arr1, arr2, i, hw, r_disp, loss, arr_disp_init)
-        min_path(buf_loss, arr_disp[i,:]) # Note that initial disparity and range offsets need to be applied
-        if arr_disp_init is not None: arr_disp[i,:] += arr_disp_init[i,:]
+        min_path(buf_loss, arr_disp[i,:]) # range offset and initial disparity need to be applied after
         arr_disp[i,:] += r_disp[0]
+        if arr_disp_init is not None: arr_disp[i,:] += arr_disp_init[i,:]
     return arr_disp
 
 # Cell
@@ -75,7 +69,7 @@ def argmin_sub(arr):
     idx_min = argmin_int(arr)
     if 1 <= idx_min <= len(arr)-2:
         delta_idx = ((arr[idx_min+1]-arr[idx_min-1])/2)/(arr[idx_min+1]-2*arr[idx_min]+arr[idx_min-1])
-        if np.isnan(delta_idx): delta_idx = 0
+        if np.isnan(delta_idx): delta_idx =  0
         if delta_idx < -1:      delta_idx = -1
         if delta_idx >  1:      delta_idx =  1
         idx_min = idx_min - delta_idx
@@ -89,72 +83,72 @@ def min_path_sub(arr_loss, buf_path):
 
 # Cell
 @numba.jit(nopython=True)
-def _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, cost_disp):
+def _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, penality_disp):
     buf_route     = np.zeros(arr_loss.shape)
     buf_move      = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
-    but_loss_prev = arr_loss[-1].copy()
-    for i in range(len(arr_loss)-1, -1, -1):
-        # Get total cost of each move
+    buf_loss_prev = arr_loss[-1].copy() # Going backwards, this is initial optimal loss
+    for i in range(len(arr_loss)-2, -1, -1):
+        # Get loss of each move
         buf_move[:] = np.inf
         for j in range(-max_change, max_change+1):
-            idx_minc, idx_maxc = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
+            idx_minl, idx_maxl = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
             idx_minm, idx_maxm = max(-j,0), min(arr_loss.shape[1]-j,arr_loss.shape[1])
-            buf_move[j+max_change, idx_minm:idx_maxm] = but_loss_prev[idx_minc:idx_maxc] + abs(j)*cost_disp
+            buf_move[j+max_change, idx_minm:idx_maxm] = buf_loss_prev[idx_minl:idx_maxl] + abs(j)*penality_disp
         # Get optimal move and store it
         for j in range(buf_move.shape[1]):
             idx_min = np.argmin(buf_move[:,j])
             buf_route[i,j] = idx_min - max_change
-            but_loss_prev[j] = arr_loss[i,j] + buf_move[idx_min, j] # loss = previous loss + optimal move
+            buf_loss_prev[j] = arr_loss[i,j] + buf_move[idx_min, j] # total loss = loss + optimal move
     # Gather path
-    buf_path[0] = np.argmin(but_loss_prev)
+    buf_path[0] = np.argmin(buf_loss_prev)
     for i in range(1, len(buf_route)):
         buf_path[i] = buf_path[i-1] + buf_route[i-1, int(buf_path[i-1])]
 
 # Cell
-def make_min_path_int_dp(r_disp, max_change, cost_disp):
+def make_min_path_int_dp(r_disp, max_change, penalty_disp):
     @numba.jit(nopython=True)
     def min_path(arr_loss, buf_path):
-        return _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, cost_disp)
+        return _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp)
     return min_path
 
 # Cell
 @numba.jit(nopython=True)
 def interp(arr, idx):
-    if idx < 0 or len(arr)-1 < idx: val = np.nan
+    if idx < 0 or idx > len(arr)-1: val = np.nan
     else:
         idx_f = np.floor(idx)
-        if idx == idx_f:    val = arr[int(idx_f)]
-        else:               val = (idx_f+1-idx)*arr[int(idx_f)] + (idx-idx_f)*arr[int(idx_f)+1]
+        if idx == idx_f: val = arr[int(idx_f)]
+        else:            val = (idx_f+1-idx)*arr[int(idx_f)] + (idx-idx_f)*arr[int(idx_f)+1]
     return val
 
 # Cell
 @numba.jit(nopython=True)
-def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, cost_disp):
+def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penality_disp):
     buf_route     = np.zeros(arr_loss.shape)
     buf_move      = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
-    buf_cost_prev = arr_loss[-1].copy()
-    for i in range(len(arr_loss)-1, -1, -1):
-        # Get total cost of each move
+    buf_loss_prev = arr_loss[-1].copy() # Going backwards, this is initial optimal loss
+    for i in range(len(arr_loss)-2, -1, -1):
+        # Get loss of each move
         buf_move[:] = np.inf
         for j in range(-max_change, max_change+1):
-            idx_minc, idx_maxc = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
+            idx_minl, idx_maxl = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
             idx_minm, idx_maxm = max(-j,0), min(arr_loss.shape[1]-j,arr_loss.shape[1])
-            buf_move[j+max_change, idx_minm:idx_maxm] = buf_cost_prev[idx_minc:idx_maxc] + abs(j)*cost_disp
+            buf_move[j+max_change, idx_minm:idx_maxm] = buf_loss_prev[idx_minl:idx_maxl] + abs(j)*penality_disp
         # Get optimal move and store it
         for j in range(buf_move.shape[1]):
             idx_min = argmin_sub(buf_move[:,j])
             buf_route[i,j] = idx_min - max_change
-            buf_cost_prev[j] = arr_loss[i,j] + interp(buf_move[:, j], idx_min)
+            buf_loss_prev[j] = arr_loss[i,j] + interp(buf_move[:, j], idx_min)
     # Gather path
-    buf_path[0] = argmin_sub(buf_cost_prev)
+    buf_path[0] = argmin_sub(buf_loss_prev)
     for i in range(1, len(buf_route)):
         buf_path[i] = buf_path[i-1] + interp(buf_route[i-1, :], buf_path[i-1])
 
 # Cell
-def make_min_path_sub_dp(r_disp, max_change, cost_disp):
+def make_min_path_sub_dp(r_disp, max_change, penalty_disp):
     @numba.jit(nopython=True)
     def min_path(arr_loss, buf_path):
-        return _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, cost_disp)
+        return _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp)
     return min_path
 
 # Cell
@@ -179,11 +173,11 @@ def rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path, steps=3):
 
 # Cell
 class RectMatch:
-    def __init__(self, type_min_path, hw=15, r_disp=(-5,5), loss=SAD, steps=3, max_change=3, cost_disp=2):
+    def __init__(self, type_min_path, hw=15, r_disp=(-5,5), loss=SAD, steps=3, max_change=3, penalty_disp=2):
         if   type_min_path == 'int':    min_path = min_path_int
         elif type_min_path == 'sub':    min_path = min_path_sub
-        elif type_min_path == 'int_dp': min_path = make_min_path_int_dp(r_disp, max_change, cost_disp)
-        elif type_min_path == 'sub_dp': min_path = make_min_path_sub_dp(r_disp, max_change, cost_disp)
+        elif type_min_path == 'int_dp': min_path = make_min_path_int_dp(r_disp, max_change, penalty_disp)
+        elif type_min_path == 'sub_dp': min_path = make_min_path_sub_dp(r_disp, max_change, penalty_disp)
         else: raise RuntimeError(f'Unrecognized min path type: {type_min_path}')
         self.hw, self.r_disp, self.loss, self.steps, self.min_path = hw, r_disp, loss, steps, min_path
 
