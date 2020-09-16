@@ -309,7 +309,7 @@ axs[1].imshow(arr2_r, cmap='gray')
 
 
 
-    <matplotlib.image.AxesImage at 0x7f89f2ca2090>
+    <matplotlib.image.AxesImage at 0x7f98174a4650>
 
 
 
@@ -360,13 +360,16 @@ def SAD(arr1, arr2):
 ```python
 # export
 @numba.jit(nopython=True)
-def rect_loss_p(arr1, arr2, x, y, hw, min_disp, max_disp, loss, buf_loss):
-    h_arr, w_arr = arr1.shape[0], arr1.shape[1]
+def rect_loss_p(arr1, arr2, x, y, min_disp, max_disp, hw, loss, buf_loss):
+    h_arr, w_arr = arr1.shape
 
     l_t, t_t, r_t, b_t = max(x-hw, 0), max(y-hw, 0), min(x+hw, w_arr-1), min(y+hw, h_arr-1)
     h_t, w_t = b_t-t_t+1, r_t-l_t+1
-    for j in range(max(-l_t, min_disp), min(w_arr-r_t, max_disp+1)):
-        buf_loss[j-min_disp] = loss(arr1[t_t:t_t+h_t, l_t:l_t+w_t], arr2[t_t:t_t+h_t, j+l_t:j+l_t+w_t])
+    for j in range(min_disp, max_disp+1):
+        if (j+l_t >= 0) and (j+r_t < w_arr): # Template in bounds
+            buf_loss[j-min_disp] = loss(arr1[t_t:t_t+h_t, l_t:l_t+w_t], arr2[t_t:t_t+h_t, j+l_t:j+l_t+w_t])
+        else:                                # Template out of bound 
+            buf_loss[j-min_disp] = np.inf        
 ```
 
 `argmin_int` is the integer argument minimum; `int` suffix is only used to distinguish between subpixel minimum, which is used later.
@@ -384,7 +387,7 @@ Test out getting the loss for an example point
 ```python
 def _debug_rect_loss_p(x, y):
     buf_loss = np.full(max_disp-min_disp+1, np.inf)
-    rect_loss_p(arr1, arr2, x, y, hw, min_disp, max_disp, loss, buf_loss)
+    rect_loss_p(arr1, arr2, x, y, min_disp, max_disp, hw, loss, buf_loss)
     disp = argmin(buf_loss) + min_disp
     _, axs = plt.subplots(1, 2, figsize=(10,10))
     axs[0].imshow(arr1)
@@ -413,21 +416,20 @@ _debug_rect_loss_p(x=60, y=75)
 ```python
 # export
 @numba.jit(nopython=True)
-def rect_loss_l(arr1, arr2, y, hw, r_disp, loss, arr_disp_init=None):
-    h_arr, w_arr = arr1.shape[0], arr1.shape[1]
+def rect_loss_l(arr1, arr2, y, r_disp, hw, loss, buf_loss, arr_disp_init=None):
+    h_arr, w_arr = arr1.shape
 
-    buf_loss = np.full((w_arr, r_disp[1]-r_disp[0]+1), np.inf)
     for i in range(w_arr):
         disp_init = 0 if arr_disp_init is None else arr_disp_init[y, i]
         min_disp, max_disp = [disp + disp_init for disp in r_disp]
-        rect_loss_p(arr1, arr2, i, y, hw, min_disp, max_disp, loss, buf_loss[i, :])
-    return buf_loss
+        rect_loss_p(arr1, arr2, i, y, min_disp, max_disp, hw, loss, buf_loss[i, :])
 ```
 
 
 ```python
 def _debug_rect_loss_l(y):
-    buf_loss = rect_loss_l(arr1, arr2, y, hw, r_disp, loss)
+    buf_loss = np.empty((arr1.shape[1], r_disp[1]-r_disp[0]+1))
+    rect_loss_l(arr1, arr2, y, r_disp, hw, loss, buf_loss)
     _, ax = plt.subplots(1, 1, figsize=(10,10))
     ax.imshow(buf_loss.T)
     return buf_loss
@@ -460,7 +462,7 @@ def min_path_int(arr_loss, buf_path):
         buf_path[i] = argmin_int(arr_loss[i, :])
 ```
 
-`rect_match_arr` will compute a disparity map. It takes an input `min_path` function which, when given a loss buffer, will compute the best path across it; this will make more sense when we use dynamic programming. `arr_disp_init` is an initial guess for the disparity map; this will make more sense when we do the image pyramids. 
+`rect_match_arr_min_path` will compute a disparity map. It takes an input `min_path` function which, when given a loss buffer, will compute the best path across it; this will make more sense when we use dynamic programming. `arr_disp_init` is an initial guess for the disparity map; this will make more sense when we do the image pyramids. 
 
 Note that this seems to be the level where multi-threading makes sense; it's not too fine grained where overhead will slow things down and it's not too grainular such that a single thread can cause a long delay.
 
@@ -468,12 +470,13 @@ Note that this seems to be the level where multi-threading makes sense; it's not
 ```python
 # export
 @numba.jit(nopython=True, parallel=True)
-def rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path, arr_disp_init=None):
+def rect_match_arr_min_path(arr1, arr2, r_disp, hw, loss, min_path, arr_disp_init=None):
     h_arr, w_arr = arr1.shape[0], arr1.shape[1]
     
     arr_disp = np.empty((h_arr, w_arr))
     for i in numba.prange(h_arr):
-        buf_loss = rect_loss_l(arr1, arr2, i, hw, r_disp, loss, arr_disp_init)
+        buf_loss = np.empty((arr1.shape[1], r_disp[1]-r_disp[0]+1))
+        rect_loss_l(arr1, arr2, i, r_disp, hw, loss, buf_loss, arr_disp_init)
         min_path(buf_loss, arr_disp[i,:]) # range offset and initial disparity need to be applied after
         arr_disp[i,:] += r_disp[0]                                       
         if arr_disp_init is not None: arr_disp[i,:] += arr_disp_init[i,:]
@@ -482,14 +485,29 @@ def rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path, arr_disp_init=None):
 
 
 ```python
-arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path_int)
+# export
+def make_rect_match_arr_min_path(r_disp, hw, loss, min_path):
+    @numba.jit(nopython=True)
+    def rect_match_arr(arr1, arr2, arr_disp_init=None):
+        return rect_match_arr_min_path(arr1, arr2, r_disp, hw, loss, min_path, arr_disp_init)
+    return rect_match_arr
+```
+
+
+```python
+rect_match_arr = make_rect_match_arr_min_path(r_disp, hw, loss, min_path_int)
+```
+
+
+```python
+arr_disp = rect_match_arr(arr1, arr2)
 ```
 
 Do it again so numba will compile and run faster.
 
 
 ```python
-arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path_int)
+arr_disp = rect_match_arr(arr1, arr2)
 ```
 
 ~200 ms is not bad. This could be realtime-ish performance for this image resolution.
@@ -505,12 +523,12 @@ axs[1].imshow(arr_disp, vmin=min_disp, vmax=max_disp, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f89ea56c650>
+    <matplotlib.image.AxesImage at 0x7f980e7cdbd0>
 
 
 
 
-![png](README_files/README_57_1.png)
+![png](README_files/README_59_1.png)
 
 
 As to be expected this doesn't look great; lets debug some problem areas
@@ -521,7 +539,7 @@ _debug_rect_loss_p(125, 60)
 ```
 
 
-![png](README_files/README_59_0.png)
+![png](README_files/README_61_0.png)
 
 
 There is confusion with similar patterns. Note the found point on the right image is 3 stripes other rather than 2 on the left image.
@@ -532,7 +550,7 @@ _debug_rect_loss_p(125, 25)
 ```
 
 
-![png](README_files/README_61_0.png)
+![png](README_files/README_63_0.png)
 
 
 Glare causes an issue; note the point on the right image is aligned to the glare instead of where it should be
@@ -543,7 +561,7 @@ _debug_rect_loss_p(45, 100)
 ```
 
 
-![png](README_files/README_63_0.png)
+![png](README_files/README_65_0.png)
 
 
 This is actually wrong since the left part of the object is not visible to the right camera. It's more aligned to the side of the object rather than its actual location.
@@ -554,7 +572,7 @@ _debug_rect_loss_p(60, 125)
 ```
 
 
-![png](README_files/README_65_0.png)
+![png](README_files/README_67_0.png)
 
 
 This might be due to the fact that sub images are not normalized (mean subtracted and divided by std-dev) before being compared.
@@ -589,12 +607,17 @@ def min_path_sub(arr_loss, buf_path):
 
 
 ```python
-arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path_sub)
+rect_match_arr = make_rect_match_arr_min_path(r_disp, hw, loss, min_path_sub)
 ```
 
 
 ```python
-arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path_sub)
+arr_disp = rect_match_arr(arr1, arr2)
+```
+
+
+```python
+arr_disp = rect_match_arr(arr1, arr2)
 ```
 
 Again, around ~200 ms, the subpixel stuff doesn't add much overhead
@@ -610,12 +633,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f89ea44d650>
+    <matplotlib.image.AxesImage at 0x7f980e195590>
 
 
 
 
-![png](README_files/README_74_1.png)
+![png](README_files/README_77_1.png)
 
 
 Looks smoother near the center of the object.
@@ -630,7 +653,7 @@ arr_loss = _debug_rect_loss_l(75)
 ```
 
 
-![png](README_files/README_78_0.png)
+![png](README_files/README_81_0.png)
 
 
 But with an added smoothness contraint. This will be in the form of a penalty for going "up" and "down" and also a max change between neighboring columns. The hope is that, in the above, the path taken will not skip down near the ~125 column, but will instead continue smoothly above it, because doing so would incur a pentalty.
@@ -639,7 +662,7 @@ But with an added smoothness contraint. This will be in the form of a penalty fo
 ```python
 # export
 @numba.jit(nopython=True)
-def _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, penality_disp):
+def _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp):
     buf_route     = np.zeros(arr_loss.shape)
     buf_move      = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
     buf_loss_prev = arr_loss[-1].copy() # Going backwards, this is initial optimal loss
@@ -649,7 +672,7 @@ def _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, penality_disp):
         for j in range(-max_change, max_change+1):
             idx_minl, idx_maxl = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
             idx_minm, idx_maxm = max(-j,0), min(arr_loss.shape[1]-j,arr_loss.shape[1])
-            buf_move[j+max_change, idx_minm:idx_maxm] = buf_loss_prev[idx_minl:idx_maxl] + abs(j)*penality_disp
+            buf_move[j+max_change, idx_minm:idx_maxm] = buf_loss_prev[idx_minl:idx_maxl] + abs(j)*penalty_disp
         # Get optimal move and store it
         for j in range(buf_move.shape[1]):
             idx_min = np.argmin(buf_move[:,j])
@@ -700,7 +723,7 @@ _debug_min_path(min_path_int)
 ```
 
 
-![png](README_files/README_86_0.png)
+![png](README_files/README_89_0.png)
 
 
 
@@ -709,19 +732,24 @@ _debug_min_path(min_path_int_dp)
 ```
 
 
-![png](README_files/README_87_0.png)
+![png](README_files/README_90_0.png)
 
 
 Dynamic programming punishes the jump near 125 and prevents it from happening... cool
 
 
 ```python
-arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path_int_dp)
+rect_match_arr = make_rect_match_arr_min_path(r_disp, hw, loss, min_path_int_dp)
 ```
 
 
 ```python
-arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path_int_dp)
+arr_disp = rect_match_arr(arr1, arr2)
+```
+
+
+```python
+arr_disp = rect_match_arr(arr1, arr2)
 ```
 
 Again, ~200 ms, not bad.
@@ -737,12 +765,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f89e9fbc310>
+    <matplotlib.image.AxesImage at 0x7f980de90850>
 
 
 
 
-![png](README_files/README_92_1.png)
+![png](README_files/README_96_1.png)
 
 
 Definitely much smoother. The glare still causes problems though.
@@ -780,7 +808,7 @@ assert_allclose(np.isnan(interp(arr,  2.5)), True)
 ```python
 # export
 @numba.jit(nopython=True)
-def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penality_disp):
+def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp):
     buf_route     = np.zeros(arr_loss.shape)
     buf_move      = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
     buf_loss_prev = arr_loss[-1].copy() # Going backwards, this is initial optimal loss
@@ -790,7 +818,7 @@ def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penality_disp):
         for j in range(-max_change, max_change+1):
             idx_minl, idx_maxl = max( j,0), min(arr_loss.shape[1]+j,arr_loss.shape[1])
             idx_minm, idx_maxm = max(-j,0), min(arr_loss.shape[1]-j,arr_loss.shape[1])
-            buf_move[j+max_change, idx_minm:idx_maxm] = buf_loss_prev[idx_minl:idx_maxl] + abs(j)*penality_disp
+            buf_move[j+max_change, idx_minm:idx_maxm] = buf_loss_prev[idx_minl:idx_maxl] + abs(j)*penalty_disp
         # Get optimal move and store it
         for j in range(buf_move.shape[1]):
             idx_min = argmin_sub(buf_move[:,j])
@@ -823,19 +851,24 @@ _debug_min_path(min_path_sub_dp)
 ```
 
 
-![png](README_files/README_101_0.png)
+![png](README_files/README_105_0.png)
 
 
 It's smooth now
 
 
 ```python
-arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path_sub_dp)
+rect_match_arr = make_rect_match_arr_min_path(r_disp, hw, loss, min_path_sub_dp)
 ```
 
 
 ```python
-arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path_sub_dp)
+arr_disp = rect_match_arr(arr1, arr2)
+```
+
+
+```python
+arr_disp = rect_match_arr(arr1, arr2)
 ```
 
 Still ~200 ms
@@ -851,12 +884,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f89e9fb4850>
+    <matplotlib.image.AxesImage at 0x7f980c0f75d0>
 
 
 
 
-![png](README_files/README_106_1.png)
+![png](README_files/README_111_1.png)
 
 
 It's a little bit different from the integer version, but overall it looks similar and is smoother
@@ -868,7 +901,7 @@ Try using an image pyramid with "telescoping" search. Note that I've kept the wi
 
 ```python
 # export
-def rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path, steps=3):
+def rect_match_pyr(arr1, arr2, rect_match_arr, steps=3):
     if not np.all(shape(arr1) % 2**steps == 0): raise RuntimeError('Shape must be divisible by 2^steps')
 
     def _get_pyr(arr):
@@ -884,7 +917,7 @@ def rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path, steps=3):
         if arr_disp is not None:
             arr_disp = imresize(2*arr_disp, 2*shape(arr_disp)) # Remember to multiply disparities by 2
             arr_disp = np.round(arr_disp).astype(np.long)      # Must be integer
-        arr_disp = rect_match_arr(arr1, arr2, hw, r_disp, loss, min_path, arr_disp)
+        arr_disp = rect_match_arr(arr1, arr2, arr_disp)
     return arr_disp
 ```
 
@@ -895,12 +928,17 @@ r_disp = (-5,5)
 
 
 ```python
-arr_disp = rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path_sub)
+rect_match_arr = make_rect_match_arr_min_path(r_disp, hw, loss, min_path_sub)
 ```
 
 
 ```python
-arr_disp = rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path_sub)
+arr_disp = rect_match_pyr(arr1, arr2, rect_match_arr)
+```
+
+
+```python
+arr_disp = rect_match_pyr(arr1, arr2, rect_match_arr)
 ```
 
 ~100 ms, could probably optimize more but its fast
@@ -916,12 +954,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f89d57cc790>
+    <matplotlib.image.AxesImage at 0x7f97f627b690>
 
 
 
 
-![png](README_files/README_115_1.png)
+![png](README_files/README_121_1.png)
 
 
 
@@ -931,12 +969,17 @@ min_path_sub_dp = make_min_path_sub_dp(r_disp, max_change, penalty_disp)
 
 
 ```python
-arr_disp = rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path_sub_dp)
+rect_match_arr = make_rect_match_arr_min_path(r_disp, hw, loss, min_path_sub_dp)
 ```
 
 
 ```python
-arr_disp = rect_match_pyr(arr1, arr2, hw, r_disp, loss, min_path_sub_dp)
+arr_disp = rect_match_pyr(arr1, arr2, rect_match_arr)
+```
+
+
+```python
+arr_disp = rect_match_pyr(arr1, arr2, rect_match_arr)
 ```
 
 ~150 ms, a little slower but still pretty fast
@@ -952,13 +995,593 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f89ea760510>
+    <matplotlib.image.AxesImage at 0x7f97f6341710>
 
 
 
 
-![png](README_files/README_120_1.png)
+![png](README_files/README_127_1.png)
 
+
+# SGM
+
+Semi global matching is another popular method thats fast but has more smoothness constraints than dynamic programming (which are restricted to scan lines). A lot of SGM implementations I've seen usually have a fixed number of directions (like 8 cardinal directions) which are hard coded. I want to be able to input any direction and see what the output disparity map looks like. I've attempted to do this by implementing a `line_loop` which will iterate over an array in non-overlapping lines.
+
+### Line loop
+
+`np.isclose` hasnt been implemented yet
+
+
+```python
+@numba.jit(nopython=True)
+def isclose(x, y, atol=1e-8): return abs(x-y) < atol
+```
+
+`np.clip` hasnt been implemented yet
+
+
+```python
+@numba.jit(nopython=True)
+def clip(x, min_x, max_x): return max(min(x, max_x), min_x)
+```
+
+`line_loop` will iterate over an `arr` line by line in a non-overlapping and full/unique manner given an input `theta`.
+
+
+```python
+@numba.jit(nopython=True)
+def line_loop(arr, theta, callback):
+    h, w = arr.shape[0:2]
+
+    # Get dx, dy
+    dx, dy = np.cos(theta), np.sin(theta)
+    if    isclose(dx, 0): dx, dy = 0, np.sign(dy)*h
+    elif  isclose(dy, 0): dx, dy = np.sign(dx)*w, 0
+    else:
+        sf = min(abs(dx), abs(dy))
+        dx, dy = np.round(dx/sf), np.round(dy/sf)
+        dx, dy = clip(dx, 1-w, w-1), clip(dy, 1-h, h-1)
+    dx, dy = int(dx), int(dy)
+
+    # Get increments
+    if abs(dx) > abs(dy): l, dx_l, dy_l, dx_c, dy_c = abs(dx), np.sign(dx), 0, 0, np.sign(dy)
+    else:                 l, dx_l, dy_l, dx_c, dy_c = abs(dy), 0, np.sign(dy), np.sign(dx), 0
+
+    # Get initial p0
+    if   0 <= dx <   w and 0 <  dy <=  h: x0, y0 = w-1,   0
+    elif 0 <  dx <=  w and 0 >= dy >  -h: x0, y0 =   0,   0
+    elif 0 >= dx >  -w and 0 >  dy >= -h: x0, y0 =   0, h-1
+    elif 0 >  dx >= -w and 0 <= dy <   h: x0, y0 = w-1, h-1
+    else: raise RuntimeError('Invalid dx, dy')
+
+    # Do line iterations
+    it_p, num_p = 0, h*w              # Iterate until it_p == num_p
+    while it_p < num_p:
+        x, y, started = x0, y0, False # Start tracing line at p0
+        while True:
+            for i in range(l):
+                if (0 <= x < w) and (0 <= y < h):
+                    if not started: callback.start_line(arr, x, y); started=True
+                    else:           callback.in_line(arr, x, y)
+                    it_p += 1         # Point increment
+                x += dx_l; y += dy_l  # Line increment
+            x += dx_c; y += dy_c      # Change increment
+            if not ((0 <= x < w) and (0 <= y < h)): break # Lines goes out of array, so end this line
+        # Shift start of line based on current p0
+        if   x0 >= w-1 and y0 >=   1: y0 -= max(abs(dy), 1)
+        elif x0 >=   1 and y0 <=   0: x0 -= max(abs(dx), 1)
+        elif x0 <=   0 and y0 <= h-2: y0 += max(abs(dy), 1)
+        elif x0 <= w-2 and y0 >= h-1: x0 += max(abs(dx), 1)
+        else: raise RuntimeError('Invalid x0, y0')
+```
+
+### Line loop tests
+
+Use callbacks to test
+
+
+```python
+@numba.experimental.jitclass([('it', numba.int32)])
+class callback_itfill(object):
+    def __init__(self):              self.it = -1
+    def start_line(self, arr, x, y): self.it += 1; arr[y, x] = self.it
+    def in_line(self, arr, x, y):    self.it += 1; arr[y, x] = self.it
+```
+
+
+```python
+@numba.experimental.jitclass([('line', numba.int32)])
+class callback_linefill(object):
+    def __init__(self):              self.line = -1
+    def start_line(self, arr, x, y): self.line += 1; arr[y, x] = self.line
+    def in_line(self, arr, x, y):    arr[y, x] = self.line
+```
+
+
+```python
+@numba.experimental.jitclass([('line', numba.int32)])
+class callback_startfill(object):
+    def __init__(self):              self.line = -1
+    def start_line(self, arr, x, y): self.line += 1; arr[y, x] = self.line
+    def in_line(self, arr, x, y):    pass
+```
+
+Do 16 cardinal directions
+
+
+```python
+arr = np.full((3, 4), -1)
+```
+
+
+```python
+theta = (0/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 0,  1,  2,  3],
+                               [ 4,  5,  6,  7],
+                               [ 8,  9, 10, 11]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[0, 0, 0, 0],
+                               [1, 1, 1, 1],
+                               [2, 2, 2, 2]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 0, -1, -1, -1],
+                               [ 1, -1, -1, -1],
+                               [ 2, -1, -1, -1]]))
+```
+
+
+```python
+theta = (1/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 4,  1,  2,  0],
+                               [ 8,  5,  6,  3],
+                               [11,  9, 10,  7]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[2, 1, 1, 0],
+                               [3, 2, 2, 1],
+                               [4, 3, 3, 2]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 2,  1, -1,  0],
+                               [ 3, -1, -1, -1],
+                               [ 4, -1, -1, -1]]))
+```
+
+
+```python
+theta = (2/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 6,  3,  1,  0],
+                               [ 9,  7,  4,  2],
+                               [11, 10,  8,  5]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[3, 2, 1, 0],
+                               [4, 3, 2, 1],
+                               [5, 4, 3, 2]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 3,  2,  1,  0],
+                               [ 4, -1, -1, -1],
+                               [ 5, -1, -1, -1]]))
+```
+
+
+```python
+theta = (3/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 8,  5,  2,  0],
+                               [ 9,  6,  3,  1],
+                               [11, 10,  7,  4]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[3, 2, 1, 0],
+                               [3, 2, 1, 0],
+                               [4, 3, 2, 1]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 3,  2,  1,  0],
+                               [-1, -1, -1, -1],
+                               [ 4, -1, -1, -1]]))
+```
+
+
+```python
+theta = (4/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 9,  6,  3,  0],
+                               [10,  7,  4,  1],
+                               [11,  8,  5,  2]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[3, 2, 1, 0],
+                               [3, 2, 1, 0],
+                               [3, 2, 1, 0]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 3,  2,  1,  0],
+                               [-1, -1, -1, -1],
+                               [-1, -1, -1, -1]]))
+```
+
+
+```python
+theta = (5/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[10,  7,  4,  1],
+                               [11,  8,  5,  2],
+                               [ 9,  6,  3,  0]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[4, 3, 2, 1],
+                               [4, 3, 2, 1],
+                               [3, 2, 1, 0]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 4,  3,  2,  1],
+                               [-1, -1, -1, -1],
+                               [-1, -1, -1,  0]]))
+```
+
+
+```python
+theta = (6/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[11,  9,  6,  3],
+                               [10,  7,  4,  1],
+                               [ 8,  5,  2,  0]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[5, 4, 3, 2],
+                               [4, 3, 2, 1],
+                               [3, 2, 1, 0]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 5,  4,  3,  2],
+                               [-1, -1, -1,  1],
+                               [-1, -1, -1,  0]]))
+```
+
+
+```python
+theta = (7/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[11, 10,  7,  6],
+                               [ 9,  8,  3,  2],
+                               [ 5,  4,  1,  0]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[3, 3, 2, 2],
+                               [2, 2, 1, 1],
+                               [1, 1, 0, 0]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[-1,  3, -1,  2],
+                               [-1, -1, -1,  1],
+                               [-1, -1, -1,  0]]))
+```
+
+
+```python
+theta = (8/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[11, 10,  9,  8],
+                               [ 7,  6,  5,  4],
+                               [ 3,  2,  1,  0]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[2, 2, 2, 2],
+                               [1, 1, 1, 1],
+                               [0, 0, 0, 0]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[-1, -1, -1,  2],
+                               [-1, -1, -1,  1],
+                               [-1, -1, -1,  0]]))
+```
+
+
+```python
+theta = (9/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 7, 10,  9, 11],
+                               [ 3,  6,  5,  8],
+                               [ 0,  2,  1,  4]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[2, 3, 3, 4],
+                               [1, 2, 2, 3],
+                               [0, 1, 1, 2]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[-1, -1, -1,  4],
+                               [-1, -1, -1,  3],
+                               [ 0, -1,  1,  2]]))
+```
+
+
+```python
+theta = (10/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 5,  8, 10, 11],
+                               [ 2,  4,  7,  9],
+                               [ 0,  1,  3,  6]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[2, 3, 4, 5],
+                               [1, 2, 3, 4],
+                               [0, 1, 2, 3]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[-1, -1, -1,  5],
+                               [-1, -1, -1,  4],
+                               [ 0,  1,  2,  3]]))
+```
+
+
+```python
+theta = (11/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 4,  7, 10, 11],
+                               [ 1,  3,  6,  9],
+                               [ 0,  2,  5,  8]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[1, 2, 3, 4],
+                               [0, 1, 2, 3],
+                               [0, 1, 2, 3]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[-1, -1, -1,  4],
+                               [-1, -1, -1, -1],
+                               [ 0,  1,  2,  3]]))
+```
+
+
+```python
+theta = (12/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 2,  5,  8, 11],
+                               [ 1,  4,  7, 10],
+                               [ 0,  3,  6,  9]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[0, 1, 2, 3],
+                               [0, 1, 2, 3],
+                               [0, 1, 2, 3]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[-1, -1, -1, -1],
+                               [-1, -1, -1, -1],
+                               [ 0,  1,  2,  3]]))
+```
+
+
+```python
+theta = (13/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 0,  3,  6,  9],
+                               [ 2,  5,  8, 11],
+                               [ 1,  4,  7, 10]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[0, 1, 2, 3],
+                               [1, 2, 3, 4],
+                               [1, 2, 3, 4]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 0, -1, -1, -1],
+                               [-1, -1, -1, -1],
+                               [ 1,  2,  3,  4]]))
+```
+
+
+```python
+theta = (14/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 0,  2,  5,  8],
+                               [ 1,  4,  7, 10],
+                               [ 3,  6,  9, 11]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[0, 1, 2, 3],
+                               [1, 2, 3, 4],
+                               [2, 3, 4, 5]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 0, -1, -1, -1],
+                               [ 1, -1, -1, -1],
+                               [ 2,  3,  4,  5]]))
+```
+
+
+```python
+theta = (15/8)*np.pi
+arr[:] = -1; line_loop(arr, theta, callback_itfill())
+assert_allclose(arr, np.array([[ 0,  1,  4,  5],
+                               [ 2,  3,  8,  9],
+                               [ 6,  7, 10, 11]]))
+arr[:] = -1; line_loop(arr, theta, callback_linefill())
+assert_allclose(arr, np.array([[0, 0, 1, 1],
+                               [1, 1, 2, 2],
+                               [2, 2, 3, 3]]))
+arr[:] = -1; line_loop(arr, theta, callback_startfill())
+assert_allclose(arr, np.array([[ 0, -1, -1, -1],
+                               [ 1, -1, -1, -1],
+                               [ 2, -1,  3, -1]]))
+```
+
+### SGM implementation
+
+First, we need to precompute the disparity losses for the entire array; this buffer can be quite large for large images
+
+
+```python
+# export
+@numba.jit(nopython=True, parallel=True)
+def rect_loss_arr(arr1, arr2, r_disp, hw, loss, buf_loss, arr_disp_init=None):
+    h_arr, w_arr = arr1.shape
+    for i in numba.prange(h_arr):
+        rect_loss_l(arr1, arr2, i, r_disp, hw, loss, buf_loss[i], arr_disp_init)
+```
+
+
+```python
+@numba.experimental.jitclass([('buf_accum', numba.float64[:,:,:]), 
+                              ('buf_move', numba.float64[:,:]),
+                              ('x_prev', numba.int32), 
+                              ('y_prev', numba.int32),
+                              ('max_change', numba.int32),
+                              ('penalty_disp', numba.int32)])
+class callback_sgm(object):
+    def __init__(self, sz, r_disp, max_change, penalty_disp):
+        self.buf_accum = np.empty((sz[0], sz[1], r_disp[1]-r_disp[0]+1))
+        self.buf_move = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
+        self.x_prev, self.y_prev = -1, -1
+        self.max_change, self.penalty_disp = max_change, penalty_disp
+    def start_line(self, arr, x, y):
+        self.buf_accum[y, x] = arr[y, x] # Initialize
+        self.x_prev, self.y_prev = x, y
+    def in_line(self, arr, x, y):
+        # Get loss of each move
+        self.buf_move[:] = np.inf
+        for j in range(-self.max_change, self.max_change+1):
+            idx_minl, idx_maxl = max( j,0), min(self.buf_move.shape[1]+j,self.buf_move.shape[1])
+            idx_minm, idx_maxm = max(-j,0), min(self.buf_move.shape[1]-j,self.buf_move.shape[1])
+            self.buf_move[j+max_change, idx_minm:idx_maxm] = \
+                self.buf_accum[self.y_prev, self.x_prev, idx_minl:idx_maxl] + abs(j)*self.penalty_disp
+
+        # Get optimal cost and store it
+        for j in range(self.buf_move.shape[1]):
+            self.buf_accum[y, x, j] = arr[y, x, j] + np.min(self.buf_move[:, j])
+
+        self.x_prev, self.y_prev = x, y
+```
+
+Precompute loss array
+
+
+```python
+r_disp = (-15, 15)
+```
+
+
+```python
+buf_loss = np.empty((arr1.shape[0], arr1.shape[1], r_disp[1]-r_disp[0]+1))
+rect_loss_arr(arr1, arr2, r_disp, hw, loss, buf_loss)
+```
+
+Get SGM callback
+
+
+```python
+callback = callback_sgm(arr1.shape, r_disp, max_change, penalty_disp)
+```
+
+Plot each direction
+
+
+```python
+fig, axs = plt.subplots(4, 4, figsize=(20, 20))
+for idx, ax in enumerate(axs.flatten()):
+    theta = (idx/8)*np.pi
+    line_loop(buf_loss, theta, callback)
+    ax.imshow(np.argmin(callback.buf_accum, axis=2))
+    ax.set_title(f'Theta: {theta}')
+```
+
+
+![png](README_files/README_170_0.png)
+
+
+Make api for sgm
+
+
+```python
+# export
+@numba.jit(nopython=True, parallel=True)
+def rect_match_arr_sgm(arr1, arr2, r_disp, hw, loss, max_change, penalty_disp, thetas, arr_disp_init=None):
+    h_arr, w_arr = arr1.shape[0], arr1.shape[1]
+        
+    # Precompute losses
+    buf_loss = np.empty((h_arr, w_arr, r_disp[1]-r_disp[0]+1))
+    rect_loss_arr(arr1, arr2, r_disp, hw, loss, buf_loss, arr_disp_init)
+    
+    # Do SGM accumulation
+    callback = callback_sgm(arr1.shape, r_disp, max_change, penalty_disp)
+    buf_accum = np.zeros((h_arr, w_arr, r_disp[1]-r_disp[0]+1))
+    for theta in thetas:
+        line_loop(buf_loss, theta, callback)
+        buf_accum += callback.buf_accum
+        
+    # Get disparity map
+    arr_disp = np.empty((h_arr, w_arr))
+    for i in range(arr1.shape[0]):
+        for j in range(arr2.shape[1]):
+            arr_disp[i, j] = np.argmin(buf_accum[i, j]) + r_disp[0]
+    if arr_disp_init is not None: arr_disp += arr_disp_init
+    return arr_disp
+```
+
+
+```python
+# export
+def make_rect_match_arr_sgm(r_disp, hw, loss, max_change, penalty_disp, thetas):
+    @numba.jit(nopython=True)
+    def rect_match_arr(arr1, arr2, arr_disp_init=None):
+        return rect_match_arr_sgm(arr1, arr2, r_disp, hw, loss, max_change, penalty_disp, thetas, arr_disp_init)
+    return rect_match_arr
+```
+
+
+```python
+hw = 15
+num_directions = 16
+thetas = np.linspace(0, 2*np.pi, num_directions+1)[:-1]
+```
+
+
+```python
+rect_match_arr = make_rect_match_arr_sgm(r_disp, hw, loss, max_change, penalty_disp, thetas)
+```
+
+
+```python
+arr_disp = rect_match_arr(arr1, arr2)
+```
+
+
+```python
+arr_disp = rect_match_arr(arr1, arr2)
+```
+
+I think this is slower primarily because input to the line looper is a class, so I think the callback isn't getting inlined which incurs more overhead, but not sure.
+
+
+```python
+_, axs = plt.subplots(1, 2, figsize=(15,10))
+axs[0].imshow(arr_disp, vmin=-15, vmax=15)
+axs[1].imshow(arr1)
+axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
+```
+
+
+
+
+    <matplotlib.image.AxesImage at 0x7f98143afcd0>
+
+
+
+
+![png](README_files/README_179_1.png)
+
+
+Try pyramid
+
+
+```python
+arr_disp = rect_match_pyr(arr1, arr2, rect_match_arr)
+```
+
+
+```python
+arr_disp = rect_match_pyr(arr1, arr2, rect_match_arr)
+```
+
+
+```python
+_, axs = plt.subplots(1, 2, figsize=(15,10))
+axs[0].imshow(arr_disp, vmin=-15, vmax=15)
+axs[1].imshow(arr1)
+axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
+```
+
+
+
+
+    <matplotlib.image.AxesImage at 0x7f97f426b2d0>
+
+
+
+
+![png](README_files/README_183_1.png)
+
+
+It's slower... probably because overhead within the sgm call, so pyramiding doesn't help, and might look worse because smoothness contraints are only applied for new disparities added at the every level, so it won't be as smooth.
 
 # API
 
@@ -968,34 +1591,44 @@ Use a class here because every time `min_path_*_dp` is instantiated it seems to 
 ```python
 # export
 class RectMatch:
-    def __init__(self, type_min_path, hw=15, r_disp=(-5,5), loss=SAD, steps=3, max_change=3, penalty_disp=2):
-        if   type_min_path == 'int':    min_path = min_path_int
-        elif type_min_path == 'sub':    min_path = min_path_sub
-        elif type_min_path == 'int_dp': min_path = make_min_path_int_dp(r_disp, max_change, penalty_disp)
-        elif type_min_path == 'sub_dp': min_path = make_min_path_sub_dp(r_disp, max_change, penalty_disp)
-        else: raise RuntimeError(f'Unrecognized min path type: {type_min_path}')
-        self.hw, self.r_disp, self.loss, self.steps, self.min_path = hw, r_disp, loss, steps, min_path
+    def __init__(self, type_rect_match, hw=15, r_disp=(-15,15), loss=SAD, max_change=3, penalty_disp=2, steps=1):
+        if type_rect_match in ['int', 'sub', 'int_dp', 'sub_dp']:
+            if   type_rect_match == 'int':
+                min_path = min_path_int
+            elif type_rect_match == 'sub':
+                min_path = min_path_sub
+            elif type_rect_match == 'int_dp': 
+                min_path = make_min_path_int_dp(r_disp, max_change, penalty_disp)
+            elif type_rect_match == 'sub_dp':
+                min_path = make_min_path_sub_dp(r_disp, max_change, penalty_disp)
+            rect_match_arr = make_rect_match_arr_min_path(r_disp, hw, loss, min_path)
+        elif type_rect_match == 'sgm':    
+            rect_match_arr = make_rect_match_arr_sgm(r_disp, hw, loss, max_change, penalty_disp, thetas)
+        else: 
+            raise RuntimeError(f'Unrecognized min path type: {type}')
+        self.rect_match_arr, self.steps = rect_match_arr, steps
     
     def __call__(self, arr1, arr2): 
-        return rect_match_pyr(arr1, arr2, self.hw, self.r_disp, self.loss, self.min_path, self.steps)
+        return rect_match_pyr(arr1, arr2, self.rect_match_arr, self.steps)
 ```
 
 
 ```python
-types_min_path = ['int', 'sub', 'int_dp', 'sub_dp']
-rect_matchs = [RectMatch(type_min_path) for type_min_path in types_min_path]
+types_rect_match = ['int', 'sub', 'int_dp', 'sub_dp', 'sgm']
+rect_matchs = [RectMatch(type_rect_match) for type_rect_match in types_rect_match]
 ```
 
 
 ```python
-_, axs = plt.subplots(2, 2, figsize=(15,10))
-for ax, rect_match, type_min_path in zip(axs.ravel(), rect_matchs, types_min_path): 
+_, axs = plt.subplots(3, 2, figsize=(15,20))
+for ax, rect_match, type_rect_match in zip(axs.ravel(), rect_matchs, types_rect_match): 
     ax.imshow(rect_match(arr1, arr2), vmin=-15, vmax=15)
-    ax.set_title(type_min_path)
+    ax.set_title(type_rect_match)
+axs[2,1].set_visible(False)
 ```
 
 
-![png](README_files/README_125_0.png)
+![png](README_files/README_189_0.png)
 
 
 # Build

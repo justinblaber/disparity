@@ -14,7 +14,12 @@ index = {"SAD": "README.ipynb",
          "interp": "README.ipynb",
          "make_min_path_sub_dp": "README.ipynb",
          "rect_match_pyr": "README.ipynb",
-         "RectMatch": "README.ipynb"}
+         "RectMatch": "README.ipynb",
+         "rect_loss_arr": "README.ipynb",
+         "rect_match_arr_sgm": "README.ipynb",
+         "rect_match_arr_min_path": "README.ipynb",
+         "make_rect_match_arr_min_path": "README.ipynb",
+         "make_rect_match_arr_sgm": "README.ipynb"}
 
 modules = ["disparity.py"]
 
