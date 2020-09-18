@@ -309,7 +309,7 @@ axs[1].imshow(arr2_r, cmap='gray')
 
 
 
-    <matplotlib.image.AxesImage at 0x7f04c8c3ce50>
+    <matplotlib.image.AxesImage at 0x7f46e0bef350>
 
 
 
@@ -521,7 +521,7 @@ axs[1].imshow(arr_disp, vmin=min_disp, vmax=max_disp, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f04c41d7650>
+    <matplotlib.image.AxesImage at 0x7f46dc231d90>
 
 
 
@@ -631,7 +631,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f04abb447d0>
+    <matplotlib.image.AxesImage at 0x7f46dc1fa690>
 
 
 
@@ -761,7 +761,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f04abb3ec10>
+    <matplotlib.image.AxesImage at 0x7f46dc3cab50>
 
 
 
@@ -823,7 +823,7 @@ def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp):
     # Gather path
     buf_path[0] = argmin_sub(buf_loss_prev)
     for i in range(1, len(buf_route)):
-        buf_path[i] = buf_path[i-1] + interp(buf_route[i-1, :], buf_path[i-1])
+        buf_path[i] = buf_path[i-1] + interp(buf_route[i-1], buf_path[i-1])
 ```
 
 
@@ -880,7 +880,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f04a81afd10>
+    <matplotlib.image.AxesImage at 0x7f46abdafd50>
 
 
 
@@ -950,7 +950,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f04ab9a19d0>
+    <matplotlib.image.AxesImage at 0x7f46abf0ca90>
 
 
 
@@ -991,7 +991,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f048f78bf90>
+    <matplotlib.image.AxesImage at 0x7f46ab692090>
 
 
 
@@ -1544,7 +1544,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f048eca97d0>
+    <matplotlib.image.AxesImage at 0x7f46aab3c410>
 
 
 
@@ -1575,7 +1575,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f048f22be50>
+    <matplotlib.image.AxesImage at 0x7f46ab09c190>
 
 
 

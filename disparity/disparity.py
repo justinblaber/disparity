@@ -153,7 +153,7 @@ def _min_path_sub_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp):
     # Gather path
     buf_path[0] = argmin_sub(buf_loss_prev)
     for i in range(1, len(buf_route)):
-        buf_path[i] = buf_path[i-1] + interp(buf_route[i-1, :], buf_path[i-1])
+        buf_path[i] = buf_path[i-1] + interp(buf_route[i-1], buf_path[i-1])
 
 # Cell
 def make_min_path_sub_dp(r_disp, max_change, penalty_disp):
