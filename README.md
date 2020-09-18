@@ -309,7 +309,7 @@ axs[1].imshow(arr2_r, cmap='gray')
 
 
 
-    <matplotlib.image.AxesImage at 0x7f98174a4650>
+    <matplotlib.image.AxesImage at 0x7f04c8c3ce50>
 
 
 
@@ -321,7 +321,7 @@ axs[1].imshow(arr2_r, cmap='gray')
 
 Do initial resize to make processing faster; also note that I'm doing the rest in numba/numpy since a lot of nested for loops are involved.
 
-NOTE: numba does not yet support classes with inheritance, so I've used functions as first class citizens for now
+NOTE: numba does not yet support classes with inheritance yet
 
 
 ```python
@@ -386,7 +386,7 @@ Test out getting the loss for an example point
 
 ```python
 def _debug_rect_loss_p(x, y):
-    buf_loss = np.full(max_disp-min_disp+1, np.inf)
+    buf_loss = np.empty(max_disp-min_disp+1)
     rect_loss_p(arr1, arr2, x, y, min_disp, max_disp, hw, loss, buf_loss)
     disp = argmin(buf_loss) + min_disp
     _, axs = plt.subplots(1, 2, figsize=(10,10))
@@ -422,7 +422,7 @@ def rect_loss_l(arr1, arr2, y, r_disp, hw, loss, buf_loss, arr_disp_init=None):
     for i in range(w_arr):
         disp_init = 0 if arr_disp_init is None else arr_disp_init[y, i]
         min_disp, max_disp = [disp + disp_init for disp in r_disp]
-        rect_loss_p(arr1, arr2, i, y, min_disp, max_disp, hw, loss, buf_loss[i, :])
+        rect_loss_p(arr1, arr2, i, y, min_disp, max_disp, hw, loss, buf_loss[i])
 ```
 
 
@@ -449,8 +449,6 @@ _debug_rect_loss_l(60);
 ![png](README_files/README_47_0.png)
 
 
-Note in the above (transposed) loss buffer, the `argmin` will be done column-wise, which could be a problem near column ~125 since there are two minima there.
-
 `min_path_int` will compute the path from left to right of transposed loss buffer using the minimum value in each column.
 
 
@@ -459,7 +457,7 @@ Note in the above (transposed) loss buffer, the `argmin` will be done column-wis
 @numba.jit(nopython=True)
 def min_path_int(arr_loss, buf_path):
     for i in range(len(arr_loss)):
-        buf_path[i] = argmin_int(arr_loss[i, :])
+        buf_path[i] = argmin_int(arr_loss[i])
 ```
 
 `rect_match_arr_min_path` will compute a disparity map. It takes an input `min_path` function which, when given a loss buffer, will compute the best path across it; this will make more sense when we use dynamic programming. `arr_disp_init` is an initial guess for the disparity map; this will make more sense when we do the image pyramids. 
@@ -477,9 +475,9 @@ def rect_match_arr_min_path(arr1, arr2, r_disp, hw, loss, min_path, arr_disp_ini
     for i in numba.prange(h_arr):
         buf_loss = np.empty((arr1.shape[1], r_disp[1]-r_disp[0]+1))
         rect_loss_l(arr1, arr2, i, r_disp, hw, loss, buf_loss, arr_disp_init)
-        min_path(buf_loss, arr_disp[i,:]) # range offset and initial disparity need to be applied after
-        arr_disp[i,:] += r_disp[0]                                       
-        if arr_disp_init is not None: arr_disp[i,:] += arr_disp_init[i,:]
+        min_path(buf_loss, arr_disp[i]) # range offset and initial disparity need to be applied after
+        arr_disp[i] += r_disp[0]                                       
+        if arr_disp_init is not None: arr_disp[i] += arr_disp_init[i]
     return arr_disp
 ```
 
@@ -523,12 +521,12 @@ axs[1].imshow(arr_disp, vmin=min_disp, vmax=max_disp, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f980e7cdbd0>
+    <matplotlib.image.AxesImage at 0x7f04c41d7650>
 
 
 
 
-![png](README_files/README_59_1.png)
+![png](README_files/README_58_1.png)
 
 
 As to be expected this doesn't look great; lets debug some problem areas
@@ -539,7 +537,7 @@ _debug_rect_loss_p(125, 60)
 ```
 
 
-![png](README_files/README_61_0.png)
+![png](README_files/README_60_0.png)
 
 
 There is confusion with similar patterns. Note the found point on the right image is 3 stripes other rather than 2 on the left image.
@@ -550,7 +548,7 @@ _debug_rect_loss_p(125, 25)
 ```
 
 
-![png](README_files/README_63_0.png)
+![png](README_files/README_62_0.png)
 
 
 Glare causes an issue; note the point on the right image is aligned to the glare instead of where it should be
@@ -561,7 +559,7 @@ _debug_rect_loss_p(45, 100)
 ```
 
 
-![png](README_files/README_65_0.png)
+![png](README_files/README_64_0.png)
 
 
 This is actually wrong since the left part of the object is not visible to the right camera. It's more aligned to the side of the object rather than its actual location.
@@ -572,7 +570,7 @@ _debug_rect_loss_p(60, 125)
 ```
 
 
-![png](README_files/README_67_0.png)
+![png](README_files/README_66_0.png)
 
 
 This might be due to the fact that sub images are not normalized (mean subtracted and divided by std-dev) before being compared.
@@ -633,12 +631,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f980e195590>
+    <matplotlib.image.AxesImage at 0x7f04abb447d0>
 
 
 
 
-![png](README_files/README_77_1.png)
+![png](README_files/README_76_1.png)
 
 
 Looks smoother near the center of the object.
@@ -653,7 +651,7 @@ arr_loss = _debug_rect_loss_l(75)
 ```
 
 
-![png](README_files/README_81_0.png)
+![png](README_files/README_80_0.png)
 
 
 But with an added smoothness contraint. This will be in the form of a penalty for going "up" and "down" and also a max change between neighboring columns. The hope is that, in the above, the path taken will not skip down near the ~125 column, but will instead continue smoothly above it, because doing so would incur a pentalty.
@@ -684,8 +682,6 @@ def _min_path_int_dp(arr_loss, buf_path, r_disp, max_change, penalty_disp):
         buf_path[i] = buf_path[i-1] + buf_route[i-1, int(buf_path[i-1])]
 ```
 
-Numba does not support lambdas yet, so use factory function as per documentation
-
 
 ```python
 # export
@@ -712,7 +708,7 @@ min_path_int_dp = make_min_path_int_dp(r_disp, max_change, penalty_disp)
 def _debug_min_path(min_path):
     buf_path = np.empty(arr_loss.shape[0])
     min_path(arr_loss, buf_path)
-    _, ax = plt.subplots(1,1,figsize=(10,10))
+    _, ax = plt.subplots(1, 1, figsize=(10,10))
     ax.imshow(arr_loss.T)
     plt.plot(buf_path, '-r')
 ```
@@ -723,7 +719,7 @@ _debug_min_path(min_path_int)
 ```
 
 
-![png](README_files/README_89_0.png)
+![png](README_files/README_87_0.png)
 
 
 
@@ -732,7 +728,7 @@ _debug_min_path(min_path_int_dp)
 ```
 
 
-![png](README_files/README_90_0.png)
+![png](README_files/README_88_0.png)
 
 
 Dynamic programming punishes the jump near 125 and prevents it from happening... cool
@@ -765,12 +761,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f980de90850>
+    <matplotlib.image.AxesImage at 0x7f04abb3ec10>
 
 
 
 
-![png](README_files/README_96_1.png)
+![png](README_files/README_94_1.png)
 
 
 Definitely much smoother. The glare still causes problems though.
@@ -851,7 +847,7 @@ _debug_min_path(min_path_sub_dp)
 ```
 
 
-![png](README_files/README_105_0.png)
+![png](README_files/README_103_0.png)
 
 
 It's smooth now
@@ -884,12 +880,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f980c0f75d0>
+    <matplotlib.image.AxesImage at 0x7f04a81afd10>
 
 
 
 
-![png](README_files/README_111_1.png)
+![png](README_files/README_109_1.png)
 
 
 It's a little bit different from the integer version, but overall it looks similar and is smoother
@@ -954,12 +950,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f97f627b690>
+    <matplotlib.image.AxesImage at 0x7f04ab9a19d0>
 
 
 
 
-![png](README_files/README_121_1.png)
+![png](README_files/README_119_1.png)
 
 
 
@@ -995,17 +991,17 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f97f6341710>
+    <matplotlib.image.AxesImage at 0x7f048f78bf90>
 
 
 
 
-![png](README_files/README_127_1.png)
+![png](README_files/README_125_1.png)
 
 
 # SGM
 
-Semi global matching is another popular method thats fast but has more smoothness constraints than dynamic programming (which are restricted to scan lines). A lot of SGM implementations I've seen usually have a fixed number of directions (like 8 cardinal directions) which are hard coded. I want to be able to input any direction and see what the output disparity map looks like. I've attempted to do this by implementing a `line_loop` which will iterate over an array in non-overlapping lines.
+Semi global matching is another popular method thats fast but has more smoothness constraints than dynamic programming (which is restricted to rows). A lot of SGM implementations I've seen usually have a fixed number of directions (like 8 cardinal directions) which are hard coded. I want to be able to input any direction and see what the output disparity map looks like. I've attempted to do this by implementing a `line_loop` which will iterate over an array in non-overlapping lines.
 
 ### Line loop
 
@@ -1013,6 +1009,7 @@ Semi global matching is another popular method thats fast but has more smoothnes
 
 
 ```python
+# export
 @numba.jit(nopython=True)
 def isclose(x, y, atol=1e-8): return abs(x-y) < atol
 ```
@@ -1021,6 +1018,7 @@ def isclose(x, y, atol=1e-8): return abs(x-y) < atol
 
 
 ```python
+# export
 @numba.jit(nopython=True)
 def clip(x, min_x, max_x): return max(min(x, max_x), min_x)
 ```
@@ -1029,6 +1027,7 @@ def clip(x, min_x, max_x): return max(min(x, max_x), min_x)
 
 
 ```python
+# export
 @numba.jit(nopython=True)
 def line_loop(arr, theta, callback):
     h, w = arr.shape[0:2]
@@ -1401,6 +1400,7 @@ def rect_loss_arr(arr1, arr2, r_disp, hw, loss, buf_loss, arr_disp_init=None):
 
 
 ```python
+# export
 @numba.experimental.jitclass([('buf_accum', numba.float64[:,:,:]), 
                               ('buf_move', numba.float64[:,:]),
                               ('x_prev', numba.int32), 
@@ -1413,9 +1413,11 @@ class callback_sgm(object):
         self.buf_move = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
         self.x_prev, self.y_prev = -1, -1
         self.max_change, self.penalty_disp = max_change, penalty_disp
+    
     def start_line(self, arr, x, y):
         self.buf_accum[y, x] = arr[y, x] # Initialize
         self.x_prev, self.y_prev = x, y
+    
     def in_line(self, arr, x, y):
         # Get loss of each move
         self.buf_move[:] = np.inf
@@ -1465,7 +1467,7 @@ for idx, ax in enumerate(axs.flatten()):
 ```
 
 
-![png](README_files/README_170_0.png)
+![png](README_files/README_168_0.png)
 
 
 Make api for sgm
@@ -1542,12 +1544,12 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f98143afcd0>
+    <matplotlib.image.AxesImage at 0x7f048eca97d0>
 
 
 
 
-![png](README_files/README_179_1.png)
+![png](README_files/README_177_1.png)
 
 
 Try pyramid
@@ -1573,19 +1575,17 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f97f426b2d0>
+    <matplotlib.image.AxesImage at 0x7f048f22be50>
 
 
 
 
-![png](README_files/README_183_1.png)
+![png](README_files/README_181_1.png)
 
 
 It's slower... probably because overhead within the sgm call, so pyramiding doesn't help, and might look worse because smoothness contraints are only applied for new disparities added at the every level, so it won't be as smooth.
 
 # API
-
-Use a class here because every time `min_path_*_dp` is instantiated it seems to make numba recompile, so cache it in a `RectMatch` object to make each call fast.
 
 
 ```python
@@ -1605,9 +1605,9 @@ class RectMatch:
         elif type_rect_match == 'sgm':    
             rect_match_arr = make_rect_match_arr_sgm(r_disp, hw, loss, max_change, penalty_disp, thetas)
         else: 
-            raise RuntimeError(f'Unrecognized min path type: {type}')
+            raise RuntimeError(f'Unrecognized min path type: {type_rect_match}')
         self.rect_match_arr, self.steps = rect_match_arr, steps
-    
+
     def __call__(self, arr1, arr2): 
         return rect_match_pyr(arr1, arr2, self.rect_match_arr, self.steps)
 ```
@@ -1628,7 +1628,7 @@ axs[2,1].set_visible(False)
 ```
 
 
-![png](README_files/README_189_0.png)
+![png](README_files/README_186_0.png)
 
 
 # Build

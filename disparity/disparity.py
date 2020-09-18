@@ -2,8 +2,8 @@
 
 __all__ = ['SAD', 'rect_loss_p', 'argmin_int', 'rect_loss_l', 'min_path_int', 'rect_match_arr_min_path',
            'make_rect_match_arr_min_path', 'argmin_sub', 'min_path_sub', 'make_min_path_int_dp', 'interp',
-           'make_min_path_sub_dp', 'rect_match_pyr', 'rect_loss_arr', 'rect_match_arr_sgm', 'make_rect_match_arr_sgm',
-           'RectMatch']
+           'make_min_path_sub_dp', 'rect_match_pyr', 'isclose', 'clip', 'line_loop', 'rect_loss_arr', 'callback_sgm',
+           'rect_match_arr_sgm', 'make_rect_match_arr_sgm', 'RectMatch']
 
 # Cell
 import numba
@@ -45,13 +45,13 @@ def rect_loss_l(arr1, arr2, y, r_disp, hw, loss, buf_loss, arr_disp_init=None):
     for i in range(w_arr):
         disp_init = 0 if arr_disp_init is None else arr_disp_init[y, i]
         min_disp, max_disp = [disp + disp_init for disp in r_disp]
-        rect_loss_p(arr1, arr2, i, y, min_disp, max_disp, hw, loss, buf_loss[i, :])
+        rect_loss_p(arr1, arr2, i, y, min_disp, max_disp, hw, loss, buf_loss[i])
 
 # Cell
 @numba.jit(nopython=True)
 def min_path_int(arr_loss, buf_path):
     for i in range(len(arr_loss)):
-        buf_path[i] = argmin_int(arr_loss[i, :])
+        buf_path[i] = argmin_int(arr_loss[i])
 
 # Cell
 @numba.jit(nopython=True, parallel=True)
@@ -62,9 +62,9 @@ def rect_match_arr_min_path(arr1, arr2, r_disp, hw, loss, min_path, arr_disp_ini
     for i in numba.prange(h_arr):
         buf_loss = np.empty((arr1.shape[1], r_disp[1]-r_disp[0]+1))
         rect_loss_l(arr1, arr2, i, r_disp, hw, loss, buf_loss, arr_disp_init)
-        min_path(buf_loss, arr_disp[i,:]) # range offset and initial disparity need to be applied after
-        arr_disp[i,:] += r_disp[0]
-        if arr_disp_init is not None: arr_disp[i,:] += arr_disp_init[i,:]
+        min_path(buf_loss, arr_disp[i]) # range offset and initial disparity need to be applied after
+        arr_disp[i] += r_disp[0]
+        if arr_disp_init is not None: arr_disp[i] += arr_disp_init[i]
     return arr_disp
 
 # Cell
@@ -183,11 +183,98 @@ def rect_match_pyr(arr1, arr2, rect_match_arr, steps=3):
     return arr_disp
 
 # Cell
+@numba.jit(nopython=True)
+def isclose(x, y, atol=1e-8): return abs(x-y) < atol
+
+# Cell
+@numba.jit(nopython=True)
+def clip(x, min_x, max_x): return max(min(x, max_x), min_x)
+
+# Cell
+@numba.jit(nopython=True)
+def line_loop(arr, theta, callback):
+    h, w = arr.shape[0:2]
+
+    # Get dx, dy
+    dx, dy = np.cos(theta), np.sin(theta)
+    if    isclose(dx, 0): dx, dy = 0, np.sign(dy)*h
+    elif  isclose(dy, 0): dx, dy = np.sign(dx)*w, 0
+    else:
+        sf = min(abs(dx), abs(dy))
+        dx, dy = np.round(dx/sf), np.round(dy/sf)
+        dx, dy = clip(dx, 1-w, w-1), clip(dy, 1-h, h-1)
+    dx, dy = int(dx), int(dy)
+
+    # Get increments
+    if abs(dx) > abs(dy): l, dx_l, dy_l, dx_c, dy_c = abs(dx), np.sign(dx), 0, 0, np.sign(dy)
+    else:                 l, dx_l, dy_l, dx_c, dy_c = abs(dy), 0, np.sign(dy), np.sign(dx), 0
+
+    # Get initial p0
+    if   0 <= dx <   w and 0 <  dy <=  h: x0, y0 = w-1,   0
+    elif 0 <  dx <=  w and 0 >= dy >  -h: x0, y0 =   0,   0
+    elif 0 >= dx >  -w and 0 >  dy >= -h: x0, y0 =   0, h-1
+    elif 0 >  dx >= -w and 0 <= dy <   h: x0, y0 = w-1, h-1
+    else: raise RuntimeError('Invalid dx, dy')
+
+    # Do line iterations
+    it_p, num_p = 0, h*w              # Iterate until it_p == num_p
+    while it_p < num_p:
+        x, y, started = x0, y0, False # Start tracing line at p0
+        while True:
+            for i in range(l):
+                if (0 <= x < w) and (0 <= y < h):
+                    if not started: callback.start_line(arr, x, y); started=True
+                    else:           callback.in_line(arr, x, y)
+                    it_p += 1         # Point increment
+                x += dx_l; y += dy_l  # Line increment
+            x += dx_c; y += dy_c      # Change increment
+            if not ((0 <= x < w) and (0 <= y < h)): break # Lines goes out of array, so end this line
+        # Shift start of line based on current p0
+        if   x0 >= w-1 and y0 >=   1: y0 -= max(abs(dy), 1)
+        elif x0 >=   1 and y0 <=   0: x0 -= max(abs(dx), 1)
+        elif x0 <=   0 and y0 <= h-2: y0 += max(abs(dy), 1)
+        elif x0 <= w-2 and y0 >= h-1: x0 += max(abs(dx), 1)
+        else: raise RuntimeError('Invalid x0, y0')
+
+# Cell
 @numba.jit(nopython=True, parallel=True)
 def rect_loss_arr(arr1, arr2, r_disp, hw, loss, buf_loss, arr_disp_init=None):
     h_arr, w_arr = arr1.shape
     for i in numba.prange(h_arr):
         rect_loss_l(arr1, arr2, i, r_disp, hw, loss, buf_loss[i], arr_disp_init)
+
+# Cell
+@numba.experimental.jitclass([('buf_accum', numba.float64[:,:,:]),
+                              ('buf_move', numba.float64[:,:]),
+                              ('x_prev', numba.int32),
+                              ('y_prev', numba.int32),
+                              ('max_change', numba.int32),
+                              ('penalty_disp', numba.int32)])
+class callback_sgm(object):
+    def __init__(self, sz, r_disp, max_change, penalty_disp):
+        self.buf_accum = np.empty((sz[0], sz[1], r_disp[1]-r_disp[0]+1))
+        self.buf_move = np.empty((2*max_change+1, r_disp[1]-r_disp[0]+1))
+        self.x_prev, self.y_prev = -1, -1
+        self.max_change, self.penalty_disp = max_change, penalty_disp
+
+    def start_line(self, arr, x, y):
+        self.buf_accum[y, x] = arr[y, x] # Initialize
+        self.x_prev, self.y_prev = x, y
+
+    def in_line(self, arr, x, y):
+        # Get loss of each move
+        self.buf_move[:] = np.inf
+        for j in range(-self.max_change, self.max_change+1):
+            idx_minl, idx_maxl = max( j,0), min(self.buf_move.shape[1]+j,self.buf_move.shape[1])
+            idx_minm, idx_maxm = max(-j,0), min(self.buf_move.shape[1]-j,self.buf_move.shape[1])
+            self.buf_move[j+max_change, idx_minm:idx_maxm] = \
+                self.buf_accum[self.y_prev, self.x_prev, idx_minl:idx_maxl] + abs(j)*self.penalty_disp
+
+        # Get optimal cost and store it
+        for j in range(self.buf_move.shape[1]):
+            self.buf_accum[y, x, j] = arr[y, x, j] + np.min(self.buf_move[:, j])
+
+        self.x_prev, self.y_prev = x, y
 
 # Cell
 @numba.jit(nopython=True, parallel=True)
@@ -236,7 +323,7 @@ class RectMatch:
         elif type_rect_match == 'sgm':
             rect_match_arr = make_rect_match_arr_sgm(r_disp, hw, loss, max_change, penalty_disp, thetas)
         else:
-            raise RuntimeError(f'Unrecognized min path type: {type}')
+            raise RuntimeError(f'Unrecognized min path type: {type_rect_match}')
         self.rect_match_arr, self.steps = rect_match_arr, steps
 
     def __call__(self, arr1, arr2):
