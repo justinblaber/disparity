@@ -309,7 +309,7 @@ axs[1].imshow(arr2_r, cmap='gray')
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46e0bef350>
+    <matplotlib.image.AxesImage at 0x7f3c7f91ad10>
 
 
 
@@ -521,7 +521,7 @@ axs[1].imshow(arr_disp, vmin=min_disp, vmax=max_disp, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46dc231d90>
+    <matplotlib.image.AxesImage at 0x7f3c66f9a390>
 
 
 
@@ -600,7 +600,7 @@ def argmin_sub(arr):
 @numba.jit(nopython=True)
 def min_path_sub(arr_loss, buf_path):
     for i in range(len(arr_loss)):
-        buf_path[i] = argmin_sub(arr_loss[i, :])
+        buf_path[i] = argmin_sub(arr_loss[i])
 ```
 
 
@@ -631,7 +631,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46dc1fa690>
+    <matplotlib.image.AxesImage at 0x7f3c666fc910>
 
 
 
@@ -761,7 +761,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46dc3cab50>
+    <matplotlib.image.AxesImage at 0x7f3c66d5aa50>
 
 
 
@@ -880,7 +880,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46abdafd50>
+    <matplotlib.image.AxesImage at 0x7f3c6651cb10>
 
 
 
@@ -950,7 +950,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46abf0ca90>
+    <matplotlib.image.AxesImage at 0x7f3c640bbd50>
 
 
 
@@ -991,7 +991,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46ab692090>
+    <matplotlib.image.AxesImage at 0x7f3c523c3d10>
 
 
 
@@ -1544,7 +1544,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46aab3c410>
+    <matplotlib.image.AxesImage at 0x7f3c51ddc4d0>
 
 
 
@@ -1575,7 +1575,7 @@ axs[1].imshow(arr_disp, vmin=-15, vmax=15, alpha=0.5)
 
 
 
-    <matplotlib.image.AxesImage at 0x7f46ab09c190>
+    <matplotlib.image.AxesImage at 0x7f3c518bda10>
 
 
 

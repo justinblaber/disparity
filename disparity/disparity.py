@@ -90,7 +90,7 @@ def argmin_sub(arr):
 @numba.jit(nopython=True)
 def min_path_sub(arr_loss, buf_path):
     for i in range(len(arr_loss)):
-        buf_path[i] = argmin_sub(arr_loss[i, :])
+        buf_path[i] = argmin_sub(arr_loss[i])
 
 # Cell
 @numba.jit(nopython=True)
